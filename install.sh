@@ -8,6 +8,32 @@ MAKE_THREADS=$(nproc)
 CLEAN_BUILD=false  # Set to true for full rebuild
 DO_KEXEC=false     # Set to true to boot into new kernel with kexec
 
+# === Step 0: Check Dependencies ===
+REQUIRED_CMDS=(
+    make gcc bc bison flex
+    libssl-dev libelf-dev libncurses-dev
+    libudev-dev libpci-dev libiberty-dev
+    dwarves
+)
+
+MISSING_PKGS=()
+
+echo ">> Checking build dependencies..."
+
+for cmd in "${REQUIRED_CMDS[@]}"; do
+    if ! dpkg -s "$cmd" &>/dev/null && ! command -v "$cmd" &>/dev/null; then
+        MISSING_PKGS+=("$cmd")
+    fi
+done
+
+if (( ${#MISSING_PKGS[@]} )); then
+    echo "[ERROR] Missing required packages/tools:"
+    printf ' - %s\n' "${MISSING_PKGS[@]}"
+    echo "Install them using:"
+    echo "  sudo apt install ${MISSING_PKGS[*]}"
+    exit 1
+fi
+
 # === Step 1: Optionally clean ===
 if [ "$CLEAN_BUILD" = true ]; then
     echo ">> Cleaning build directory..."
@@ -26,15 +52,22 @@ if [ ! -f .config ]; then
         exit 1
     fi
 
-    # Disable module signing keys if needed
-    scripts/config --disable SYSTEM_TRUSTED_KEYS
-    scripts/config --disable SYSTEM_REVOCATION_KEYS
 
-
-    scripts/config --set-str LOCALVERSION "$KERNEL_SUFFIX"
-    scripts/config --disable LOCALVERSION_AUTO
 
     yes "" | make olddefconfig
+fi
+
+# Fix for missing certs
+scripts/config --disable SYSTEM_TRUSTED_KEYS
+scripts/config --disable SYSTEM_REVOCATION_KEYS
+
+scripts/config --set-str LOCALVERSION "$KERNEL_SUFFIX"
+scripts/config --disable LOCALVERSION_AUTO
+
+# === Step 2.5: Disable DKMS ===
+if [ -d /etc/kernel/postinst.d/dkms ]; then
+    echo ">> Temporarily disabling DKMS hook..."
+    sudo mv /etc/kernel/postinst.d/dkms /etc/kernel/postinst.d/dkms.disabled
 fi
 
 # === Step 3: Build ===
@@ -47,11 +80,6 @@ make -j"$MAKE_THREADS" modules
 # === Step 4: Install modules ===
 echo ">> Installing modules..."
 sudo make modules_install
-
-# === Step 5: Disable DKMS if needed ===
-if [ -d /etc/kernel/postinst.d/dkms ]; then
-    sudo mv /etc/kernel/postinst.d/dkms /etc/kernel/postinst.d/dkms.disabled
-fi
 
 # === Step 6: Install kernel ===
 echo ">> Installing kernel..."
